@@ -183,6 +183,21 @@ function assertSheet(job: Job): string | null {
   return null
 }
 
+/**
+ * 供容量核账（src/lib/audit.ts）复用：对同一已排样任务跑自检的同一套断言
+ * （净距/修边、guillotine 合法性、逐刀模拟、利用率复算、面积守恒），
+ * 返回问题清单，空数组 = 全过。自检与核账两处口径由此保持同一来源。
+ */
+export function reconcileJob(job: Job): string[] {
+  if (!job.result) return ['尚未排样']
+  const errs: string[] = []
+  const clearanceErr = assertClearances(job)
+  if (clearanceErr) errs.push(clearanceErr)
+  const sheetErr = assertSheet(job)
+  if (sheetErr) errs.push(sheetErr)
+  return errs
+}
+
 export function runSelfTest(): SelfTestReport {
   boardSeq = 0
   partSeq = 0

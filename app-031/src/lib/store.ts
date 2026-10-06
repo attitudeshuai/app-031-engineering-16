@@ -1,6 +1,7 @@
 // 全局状态：Vue reactive 单例 + localStorage 持久化（无 Pinia/Vuex）
 import { reactive, computed } from 'vue'
 import type { Board, Job, NestResult, Part, RegisteredOffcut, SheetResult } from '../types'
+import type { AuditReport, AuditStorage } from './audit'
 import { nestJob } from './packing'
 import { rebuildFromPlacements } from './cuts'
 import { guillotineViolation } from './geometry'
@@ -9,6 +10,7 @@ import boardsData from '../data/boards.json'
 
 const JOBS_KEY = 'fco.jobs.v1'
 const OFFCUTS_KEY = 'fco.offcuts.v1'
+const AUDIT_KEY = 'fco.audit.v1'
 
 interface State {
   jobs: Job[]
@@ -373,6 +375,29 @@ export function importJobJson(json: string): Job | null {
   } catch {
     return null
   }
+}
+
+// ---------- 容量核账报告的本机存档（localStorage，最多留 10 份） ----------
+
+export function loadAuditReports(): AuditReport[] {
+  return load<AuditReport[]>(AUDIT_KEY, [])
+}
+
+export function saveAuditReport(report: AuditReport): void {
+  const list = loadAuditReports()
+  // 同一回核账（startedAt 相同）会先写一份验证回读、再落最终版：替换头条，不重复占份
+  if (list.length > 0 && list[0].startedAt === report.startedAt) {
+    list[0] = report
+  } else {
+    list.unshift(report)
+  }
+  localStorage.setItem(AUDIT_KEY, JSON.stringify(list.slice(0, 10)))
+}
+
+/** 容量核账的浏览器存档介质；脚本入口（scripts/capacity-audit.mjs）用文件存档，接口同一个。 */
+export const browserAuditStorage: AuditStorage = {
+  loadLast: () => loadAuditReports()[0] ?? null,
+  save: (r) => saveAuditReport(r)
 }
 
 export function useStore() {

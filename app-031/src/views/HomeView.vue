@@ -7,9 +7,12 @@ import {
   deleteJob,
   duplicateJob,
   createSampleJob,
-  importJobJson
+  importJobJson,
+  browserAuditStorage,
+  loadAuditReports
 } from '../lib/store'
 import { runSelfTest, type SelfTestReport } from '../lib/selftest'
+import { runCapacityAudit, fmtBytes, type AuditReport, type TierReport } from '../lib/audit'
 import { toast } from '../lib/ui'
 import { pct, money } from '../lib/format'
 
@@ -20,6 +23,9 @@ const showSelfTest = ref(false)
 const report = ref<SelfTestReport | null>(null)
 const testing = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
+const showAudit = ref(false)
+const auditReport = ref<AuditReport | null>(null)
+const auditing = ref(false)
 
 const jobs = computed(() => state.jobs)
 const availableOffcuts = computed(() => state.offcuts.filter((o) => o.available).length)
@@ -59,6 +65,40 @@ async function runTest(): Promise<void> {
     testing.value = false
   }
 }
+function toggleAudit(): void {
+  showAudit.value = !showAudit.value
+  // 打开时先亮出本机存档的上回结论；点「运行容量核账」才重算
+  if (showAudit.value && !auditReport.value) {
+    auditReport.value = loadAuditReports()[0] ?? null
+  }
+}
+async function runAudit(): Promise<void> {
+  auditing.value = true
+  await new Promise((r) => setTimeout(r, 30))
+  try {
+    auditReport.value = runCapacityAudit({ storage: browserAuditStorage })
+    toast(
+      auditReport.value.ok ? '容量核账全档通过，结论已存本机' : '有档位未过，请查看结论',
+      auditReport.value.ok ? 'good' : 'bad'
+    )
+  } finally {
+    auditing.value = false
+  }
+}
+function tierTag(t: TierReport): string {
+  return t.status === 'pass' ? 'good' : t.status === 'fail' ? 'bad' : ''
+}
+function tierText(t: TierReport): string {
+  return t.status === 'pass' ? '通过' : t.status === 'fail' ? '未过' : '回绝'
+}
+const auditIssues = computed(() => {
+  if (!auditReport.value) return []
+  return auditReport.value.tiers.flatMap((t) =>
+    t.checks
+      .filter((c) => !c.ok || c.skipped)
+      .map((c) => ({ ...c, name: `${t.pieces} 件档 · ${c.name}` }))
+  )
+})
 function onImportClick(): void {
   fileInput.value?.click()
 }
@@ -118,6 +158,9 @@ function onFile(e: Event): void {
       <button class="sm" @click="showSelfTest = !showSelfTest">
         {{ showSelfTest ? '收起' : '运行' }}算法自检（100 组随机断言）
       </button>
+      <button class="sm" @click="toggleAudit">
+        {{ showAudit ? '收起' : '' }}容量核账（100/300/600/1000 件）
+      </button>
     </div>
 
     <section v-if="showSelfTest" class="panel selftest no-print">
@@ -142,6 +185,73 @@ function onFile(e: Event): void {
           </tr>
         </tbody>
       </table>
+    </section>
+
+    <section v-if="showAudit" class="panel selftest no-print">
+      <div class="row">
+        <button class="primary sm" :disabled="auditing" @click="runAudit">
+          {{ auditing ? '核账中…' : '运行容量核账' }}
+        </button>
+        <span v-if="auditReport" :class="['tag', auditReport.ok ? 'good' : 'bad']">
+          {{ auditReport.ok ? `全档通过（${auditReport.elapsedMs}ms）` : '有档位/互证未过' }}
+        </span>
+        <span class="muted small">
+          四档各算一遍排样与刀路，量耗时/内存/用板/板面利用，按事先讲好的上限卡档；
+          排样内核、逐刀模拟、自检断言、统计复核、本机存档五处互证；结论存本机并与上一回比。
+          上线前把关请在终端跑 <code>npm run verify</code>。
+        </span>
+      </div>
+      <template v-if="auditReport">
+        <table class="grid" style="margin-top: 10px">
+          <thead>
+            <tr>
+              <th>档位</th><th>判定</th><th>耗时 / 上限</th><th>内存 / 上限</th>
+              <th>用板（张）</th><th>板面利用</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="t in auditReport.tiers" :key="t.pieces">
+              <td>{{ t.pieces }} 件</td>
+              <td><span :class="['tag', tierTag(t)]">{{ tierText(t) }}</span></td>
+              <td>{{ t.timeMs === null ? '无计时' : `${t.timeMs}ms / ${t.limitTimeMs}ms` }}</td>
+              <td>
+                {{ t.memoryBytes === null ? '无探针' : `${fmtBytes(t.memoryBytes)} / ${fmtBytes(t.limitMemoryBytes ?? 0)}` }}
+              </td>
+              <td>{{ t.boardsUsed ?? '—' }}</td>
+              <td>{{ t.utilization === null ? '—' : pct(t.utilization) }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <table v-if="auditIssues.length > 0" class="grid" style="margin-top: 8px">
+          <tbody>
+            <tr v-for="(c, i) in auditIssues" :key="i">
+              <td style="width: 34px; text-align: center">{{ c.skipped ? '⏭️' : '❌' }}</td>
+              <td>{{ c.name }}</td>
+              <td class="muted small">{{ c.detail }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <table class="grid" style="margin-top: 8px">
+          <tbody>
+            <tr v-for="(c, i) in auditReport.crossChecks" :key="i">
+              <td style="width: 34px; text-align: center">{{ c.skipped ? '⏭️' : c.ok ? '✅' : '❌' }}</td>
+              <td>{{ c.name }}</td>
+              <td class="muted small">{{ c.detail }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="small muted" style="margin: 8px 0 0">与上一回比：</p>
+        <ul class="small" style="margin: 2px 0 0">
+          <li v-for="(d, i) in auditReport.diffFromPrevious" :key="i" class="muted">{{ d }}</li>
+        </ul>
+        <p class="small muted" style="margin: 8px 0 0">结论：</p>
+        <ul class="small" style="margin: 2px 0 0">
+          <li v-for="(c, i) in auditReport.conclusions" :key="i">{{ c }}</li>
+        </ul>
+      </template>
+      <p v-else class="muted small" style="margin: 10px 0 0">
+        本机还没有核账结论，点「运行容量核账」算一遍；终端入口 <code>npm run audit</code> 与这里同一份核账逻辑。
+      </p>
     </section>
 
     <div v-if="jobs.length === 0" class="empty panel">

@@ -1,0 +1,25 @@
+{
+  "maxPieces": 1000,
+  "oversizePolicy": "reject",
+  "defaultProfile": "workshop",
+  "profiles": {
+    "workshop": {
+      "note": "按车间机器定档（假设车间机 ≈ 本机 1/3 速度、堆内存预算 512MB）。限值是生产口径：本机跑出的余量会很大，全绿不等于车间够用。",
+      "tiers": [
+        { "pieces": 100, "timeMs": 1000, "memoryMB": 64 },
+        { "pieces": 300, "timeMs": 1500, "memoryMB": 128 },
+        { "pieces": 600, "timeMs": 3500, "memoryMB": 256 },
+        { "pieces": 1000, "timeMs": 6000, "memoryMB": 512 }
+      ]
+    },
+    "dev": {
+      "note": "按开发机定档（限值 ≈ 本机实测的 3 倍）。回归拦得严、本机跑得快，但只是这台机器的口径：车间机更弱时，过了关也可能在车间崩。",
+      "tiers": [
+        { "pieces": 100, "timeMs": 100, "memoryMB": 32 },
+        { "pieces": 300, "timeMs": 200, "memoryMB": 64 },
+        { "pieces": 600, "timeMs": 500, "memoryMB": 128 },
+        { "pieces": 1000, "timeMs": 900, "memoryMB": 256 }
+      ]
+    }
+  }
+}
