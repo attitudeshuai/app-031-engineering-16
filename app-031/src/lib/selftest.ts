@@ -18,7 +18,7 @@ export interface SelfTestReport {
   checks: CheckResult[]
 }
 
-function mulberry32(seed: number): () => number {
+export function mulberry32(seed: number): () => number {
   let a = seed >>> 0
   return () => {
     a |= 0
@@ -79,7 +79,7 @@ function makeJob(parts: Part[], over: Partial<Job> = {}): Job {
 }
 
 /** 检查同板任意两件之间的净距：只要相邻就必须 ≥ kerf；四周 ≥ trim。 */
-function assertClearances(job: Job): string | null {
+export function assertClearances(job: Job): string | null {
   const kerf = job.kerfMm
   const trim = job.trimMm
   for (const sheet of job.result!.sheets) {
@@ -148,7 +148,7 @@ function dumpJob(job: Job, err?: string): void {
   }
 }
 
-function assertSheet(job: Job): string | null {
+export function assertSheet(job: Job): string | null {
   const r = job.result!
   for (const sheet of r.sheets) {
     // guillotine 合法性
@@ -183,8 +183,22 @@ function assertSheet(job: Job): string | null {
   return null
 }
 
-export function runSelfTest(): SelfTestReport {
-  boardSeq = 0
+/**
+ * 供核账入口复用的自检口径：对同一单子的排样结果做核验
+ * （锯路/修边净距 + guillotine 合法性 + 逐刀模拟还原 + 利用率与面积守恒复算）。
+ * 返回问题清单，空数组 = 通过。
+ */
+export function verifyNestJob(job: Job): string[] {
+  if (!job.result) return ['尚未排样']
+  const problems: string[] = []
+  const clearance = assertClearances(job)
+  if (clearance) problems.push(clearance)
+  const sheet = assertSheet(job)
+  if (sheet) problems.push(sheet)
+  return problems
+}
+
+export function runSelfTest(): SelfTestReport {  boardSeq = 0
   partSeq = 0
   const t0 = performance.now()
   const checks: CheckResult[] = []

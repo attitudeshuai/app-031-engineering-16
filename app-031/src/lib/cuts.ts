@@ -300,6 +300,78 @@ export function rebuildFromPlacements(
   return null
 }
 
+/** 一刀劈开当前矩形集合：返回新集合与本刀吃掉的锯路面积（mm²）。 */
+function splitLeavesByStep(
+  leaves: Rect[],
+  st: CutStep,
+  kerf: number
+): { next: Rect[]; kerfLostMm2: number } {
+  const next: Rect[] = []
+  let kerfLostMm2 = 0
+  for (const leaf of leaves) {
+    const alongStart = st.axis === 'v' ? leaf.y : leaf.x
+    const alongSize = st.axis === 'v' ? leaf.h : leaf.w
+    const intersects =
+      st.span[1] > alongStart + EPS && st.span[0] < alongStart + alongSize - EPS
+    const across = st.axis === 'v' ? leaf.x : leaf.y
+    const acrossSize = st.axis === 'v' ? leaf.w : leaf.h
+    const canSplit = intersects && st.at > across + EPS && st.at < across + acrossSize - EPS
+    if (!canSplit) {
+      next.push(leaf)
+      continue
+    }
+    if (st.axis === 'v') {
+      const wl = st.at - kerf / 2 - leaf.x
+      const wr = leaf.x + leaf.w - (st.at + kerf / 2)
+      if (wl >= -EPS && wr >= -EPS) {
+        next.push({ x: leaf.x, y: leaf.y, w: wl, h: leaf.h })
+        next.push({ x: st.at + kerf / 2, y: leaf.y, w: wr, h: leaf.h })
+        kerfLostMm2 += kerf * leaf.h
+      } else {
+        next.push(leaf)
+      }
+    } else {
+      const hb = st.at - kerf / 2 - leaf.y
+      const ht = leaf.y + leaf.h - (st.at + kerf / 2)
+      if (hb >= -EPS && ht >= -EPS) {
+        next.push({ x: leaf.x, y: leaf.y, w: leaf.w, h: hb })
+        next.push({ x: leaf.x, y: st.at + kerf / 2, w: leaf.w, h: ht })
+        kerfLostMm2 += kerf * leaf.w
+      } else {
+        next.push(leaf)
+      }
+    }
+  }
+  return { next, kerfLostMm2 }
+}
+
+/** 把叶矩形逐一匹配到零件（每片叶/每件零件只用一次），返回匹配集合与未切出的零件。 */
+function matchLeaves(
+  leaves: Rect[],
+  placements: Placement[],
+  kerf: number
+): { matched: Set<Rect>; missing: Placement[] } {
+  const matched = new Set<Rect>()
+  const missing: Placement[] = []
+  for (const p of placements) {
+    const match = leaves.find((lf) => {
+      if (matched.has(lf)) return false
+      return (
+        Math.abs(lf.x - p.x) <= kerf + 0.6 &&
+        Math.abs(lf.y - p.y) <= kerf + 0.6 &&
+        Math.abs(lf.x + lf.w - (p.x + p.lenMm)) <= kerf + 0.6 &&
+        Math.abs(lf.y + lf.h - (p.y + p.widMm)) <= kerf + 0.6
+      )
+    })
+    if (!match) {
+      missing.push(p)
+    } else {
+      matched.add(match)
+    }
+  }
+  return { matched, missing }
+}
+
 /** 逐刀模拟：维护当前矩形集合，每步按锯路居中劈开相交矩形，最后核对零件尺寸。 */
 export function simulate(
   w: number,
@@ -311,58 +383,11 @@ export function simulate(
   const errors: string[] = []
   let leaves: Rect[] = [{ x: 0, y: 0, w, h }]
   for (const st of steps) {
-    const next: Rect[] = []
-    for (const leaf of leaves) {
-      const alongStart = st.axis === 'v' ? leaf.y : leaf.x
-      const alongSize = st.axis === 'v' ? leaf.h : leaf.w
-      const intersects =
-        st.span[1] > alongStart + EPS && st.span[0] < alongStart + alongSize - EPS
-      const across = st.axis === 'v' ? leaf.x : leaf.y
-      const acrossSize = st.axis === 'v' ? leaf.w : leaf.h
-      const canSplit =
-        intersects && st.at > across + EPS && st.at < across + acrossSize - EPS
-      if (!canSplit) {
-        next.push(leaf)
-        continue
-      }
-      if (st.axis === 'v') {
-        const wl = st.at - kerf / 2 - leaf.x
-        const wr = leaf.x + leaf.w - (st.at + kerf / 2)
-        if (wl >= -EPS && wr >= -EPS) {
-          next.push({ x: leaf.x, y: leaf.y, w: wl, h: leaf.h })
-          next.push({ x: st.at + kerf / 2, y: leaf.y, w: wr, h: leaf.h })
-        } else {
-          next.push(leaf)
-        }
-      } else {
-        const hb = st.at - kerf / 2 - leaf.y
-        const ht = leaf.y + leaf.h - (st.at + kerf / 2)
-        if (hb >= -EPS && ht >= -EPS) {
-          next.push({ x: leaf.x, y: leaf.y, w: leaf.w, h: hb })
-          next.push({ x: leaf.x, y: st.at + kerf / 2, w: leaf.w, h: ht })
-        } else {
-          next.push(leaf)
-        }
-      }
-    }
-    leaves = next
+    leaves = splitLeavesByStep(leaves, st, kerf).next
   }
-  const usedLeaves = new Set<Rect>()
-  for (const p of placements) {
-    const match = leaves.find((lf) => {
-      if (usedLeaves.has(lf)) return false
-      return (
-        Math.abs(lf.x - p.x) <= kerf + 0.6 &&
-        Math.abs(lf.y - p.y) <= kerf + 0.6 &&
-        Math.abs(lf.x + lf.w - (p.x + p.lenMm)) <= kerf + 0.6 &&
-        Math.abs(lf.y + lf.h - (p.y + p.widMm)) <= kerf + 0.6
-      )
-    })
-    if (!match) {
-      errors.push(`零件 ${p.code} 在切割模拟结果中找不到对应尺寸的矩形`)
-    } else {
-      usedLeaves.add(match)
-    }
+  const { matched: usedLeaves, missing } = matchLeaves(leaves, placements, kerf)
+  for (const p of missing) {
+    errors.push(`零件 ${p.code} 在切割模拟结果中找不到对应尺寸的矩形`)
   }
   for (const lf of leaves) {
     if (usedLeaves.has(lf)) continue
@@ -387,6 +412,98 @@ export function simulate(
     }
   }
   return { ok: errors.length === 0, errors, leaves }
+}
+
+/** 逐刀守恒核账的每一刀记录。 */
+export interface CutBalanceRow {
+  order: number
+  kind: 'trim' | 'cut'
+  leaves: number // 这一刀之后剩几片料
+  partsDetached: number // 累计已切出的零件数
+  offcutLeaves: number // 余料/碎料片数
+  areaMm2: number // 当前全部料片面积和
+  kerfLostMm2: number // 累计锯路损耗
+  balanced: boolean // 料片面积 + 锯路损耗 ≈ 整板面积
+}
+
+/** 逐刀守恒核账结果。 */
+export interface CutBalanceResult {
+  ok: boolean
+  errors: string[]
+  rows: CutBalanceRow[]
+  finalParts: number // 终态切出的零件数
+  finalOffcuts: number // 终态余料/碎料片数
+  partsAreaMm2: number // 终态切出零件的面积和（几何还原口径）
+  boardAreaMm2: number
+  kerfLostMm2: number
+  restoredAreaMm2: number // 终态料片面积 + 锯路损耗（还原回去应等于整板）
+}
+
+/**
+ * 逐刀守恒核账：按刀序走一遍，每一刀之后核对「料片面积 + 累计锯路 = 整板面积」，
+ * 终态核对「切出的零件数 = 排样件数」，还原回去不许凭空多出或少掉料。
+ */
+export function auditCutBalance(
+  w: number,
+  h: number,
+  kerf: number,
+  steps: CutStep[],
+  placements: Placement[]
+): CutBalanceResult {
+  const errors: string[] = []
+  const rows: CutBalanceRow[] = []
+  const boardArea = w * h
+  const tol = Math.max(1, boardArea * 1e-6)
+  let leaves: Rect[] = [{ x: 0, y: 0, w, h }]
+  let kerfLostMm2 = 0
+  for (const st of steps) {
+    const r = splitLeavesByStep(leaves, st, kerf)
+    leaves = r.next
+    kerfLostMm2 += r.kerfLostMm2
+    const area = leaves.reduce((a, l) => a + l.w * l.h, 0)
+    const balanced = Math.abs(area + kerfLostMm2 - boardArea) <= tol
+    if (!balanced) {
+      errors.push(
+        `第 ${st.order + 1} 刀后守恒被破坏：料片 ${Math.round(area)}mm² + 锯路 ${Math.round(kerfLostMm2)}mm² ≠ 整板 ${boardArea}mm²`
+      )
+    }
+    const m = matchLeaves(leaves, placements, kerf)
+    rows.push({
+      order: st.order,
+      kind: st.kind,
+      leaves: leaves.length,
+      partsDetached: m.matched.size,
+      offcutLeaves: leaves.length - m.matched.size,
+      areaMm2: Math.round(area),
+      kerfLostMm2: Math.round(kerfLostMm2 * 10) / 10,
+      balanced
+    })
+  }
+  const final = matchLeaves(leaves, placements, kerf)
+  if (final.matched.size !== placements.length) {
+    errors.push(
+      `逐刀走完后切出 ${final.matched.size} 件，排样是 ${placements.length} 件，对不上`
+    )
+  }
+  const finalArea = leaves.reduce((a, l) => a + l.w * l.h, 0)
+  const restored = finalArea + kerfLostMm2
+  if (Math.abs(restored - boardArea) > tol) {
+    errors.push(
+      `还原回去对不上整板：料片 ${Math.round(finalArea)}mm² + 锯路 ${Math.round(kerfLostMm2)}mm² ≠ 整板 ${boardArea}mm²（凭空多出或少掉料）`
+    )
+  }
+  const partsArea = [...final.matched].reduce((a, l) => a + l.w * l.h, 0)
+  return {
+    ok: errors.length === 0,
+    errors,
+    rows,
+    finalParts: final.matched.size,
+    finalOffcuts: leaves.length - final.matched.size,
+    partsAreaMm2: Math.round(partsArea),
+    boardAreaMm2: boardArea,
+    kerfLostMm2: Math.round(kerfLostMm2 * 10) / 10,
+    restoredAreaMm2: Math.round(restored)
+  }
 }
 
 /** 车间实际锯切工步数：修边刀同规格板只算一次（叠切），内部刀按板计。 */
